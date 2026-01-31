@@ -66,7 +66,7 @@ The plugin silently deactivates if no `.beads/` directory is found.
 
 ## Installation
 
-The plugin is already in place at `.opencode/plugins/beads.js`. OpenCode
+The plugin should be placed in`.opencode/plugins/beads.js`. I prefer it to be local to the project, but you can do it globally. OpenCode
 automatically loads all plugins from `.opencode/plugins/` at startup.
 
 No additional configuration is required.
