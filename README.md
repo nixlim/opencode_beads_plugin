@@ -6,17 +6,44 @@ of running `bd setup claude` for Claude Code.
 
 ## What It Does
 
-| OpenCode Event              | Action                        | Claude Code Equivalent |
-|-----------------------------|-------------------------------|------------------------|
-| `session.created`           | Runs `bd prime`               | `SessionStart` hook    |
-| `session.compacting`        | Injects `bd prime` into context | `PreCompact` hook    |
-| `session.idle`              | Optional `bd sync`            | (no equivalent)        |
+| OpenCode Event              | Action                                  | Claude Code Equivalent |
+|-----------------------------|------------------------------------------|------------------------|
+| `session.created`           | Runs `bd prime`, injects into session    | `SessionStart` hook    |
+| `session.compacting`        | Injects `bd prime` into compaction context | `PreCompact` hook    |
+| `session.idle`              | Optional `bd sync`                       | (no equivalent)        |
 
 ### session.created (SessionStart)
 
-When a new OpenCode session starts, the plugin runs `bd prime` to load the full
-beads workflow context. This gives the agent awareness of open issues,
-dependencies, priorities, and the beads command reference.
+When a new OpenCode session is created, the plugin runs `bd prime` and injects
+the output into the session as a context-only message (using the SDK's
+`client.session.prompt()` with `noReply: true`). This gives the agent awareness
+of open issues, dependencies, priorities, and the beads command reference.
+
+**Important timing note:** Unlike Claude Code's `SessionStart` hook (which fires
+when the CLI process starts), OpenCode's `session.created` event fires lazily --
+only when the first prompt is sent, not when the TUI launches. OpenCode's TUI is
+a persistent application where sessions are created on-demand; you can sit in the
+TUI, browse history, or switch sessions without a new session being created. The
+session (and this event) only comes into existence when you actually send a
+message.
+
+This means `bd prime` runs **concurrently with** (not before) the LLM processing
+your first prompt. The prime output is injected as a `noReply: true` message into
+the session, and the LLM sees it because it appears in the message history. In
+practice the agent does receive the beads context and can act on it, but the
+first prompt has already been submitted by the time the event fires -- so the
+sequence is:
+
+1. User sends first message
+2. OpenCode creates the session and fires `session.created`
+3. The plugin's event handler runs `bd prime` and injects the output
+4. The LLM reads the message stream (which now includes both the user prompt
+   and the injected beads context) and generates its response
+
+This differs from Claude Code where the `SessionStart` hook runs and completes
+*before* the first prompt is processed. The practical effect is the same -- the
+agent has beads awareness in its first response -- but the mechanism is
+concurrent injection rather than sequential pre-loading.
 
 ### session.compacting (PreCompact)
 
@@ -39,7 +66,7 @@ The plugin silently deactivates if no `.beads/` directory is found.
 
 ## Installation
 
-The plugin is can be placed at `.opencode/plugins/beads.js`. OpenCode
+The plugin is already in place at `.opencode/plugins/beads.js`. OpenCode
 automatically loads all plugins from `.opencode/plugins/` at startup.
 
 No additional configuration is required.
@@ -98,7 +125,7 @@ additional context:
 ```js
 "experimental.session.compacting": async (_input, output) => {
   const prime = await runBd("prime");
-  const ready = await runBd("ready --json");
+  const ready = await runBd("ready", "--json");
   if (prime) {
     output.context.push(`## Beads Context\n\n${prime}`);
   }
@@ -152,26 +179,12 @@ Then in any project:
 bd setup opencode
 ```
 
-You can also add this to recipes.toml in .beads directly:
-
-```toml
-[recipes]
-  [recipes.opencode]
-    name = "opencode"
-    path = ".opencode/plugins/beads.js"
-    type = "file"
-    description = ""
-    global_path = ""
-    project_path = ""
-
-```
-
 ## Troubleshooting
 
 **Plugin not loading:**
 - Check that `.opencode/plugins/beads.js` exists
 - Ensure `.beads/` directory exists in the project root (`bd init` if not)
-- Run `opencode` with verbose logging to see plugin load messages
+- Run `opencode --print-logs --log-level DEBUG` to see plugin load messages on stderr
 
 **bd prime returning empty:**
 - Run `bd prime` manually in your terminal to verify output
@@ -181,4 +194,15 @@ You can also add this to recipes.toml in .beads directly:
 - The `experimental.session.compacting` hook is an experimental API
 - Check OpenCode release notes if behaviour changes after an update
 
-CopyAI (cAI) Igor Ryabchuk & Foundry of Zero.AI
+**bd prime only runs after sending the first message, not on TUI launch:**
+- This is expected. OpenCode creates sessions lazily -- the `session.created`
+  event fires when you send your first prompt, not when the TUI starts. The
+  prime context is injected concurrently into the session message stream, so
+  the agent still has beads awareness in its first response. See the timing
+  note under "session.created" above for details.
+
+**Prime context not appearing in session:**
+- The plugin uses `client.session.prompt()` with `noReply: true` to inject
+  context. Verify the SDK client is available by checking OpenCode's plugin
+  loading logs.
+- Ensure `@opencode-ai/plugin` is installed (check `.opencode/package.json`)
